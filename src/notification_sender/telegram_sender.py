@@ -91,7 +91,7 @@ class TelegramSender:
         payload = {
             "chat_id": chat_id,
             "text": telegram_text,
-            "parse_mode": "Markdown",
+            "parse_mode": "MarkdownV2",
             "disable_web_page_preview": True
         }
 
@@ -246,39 +246,19 @@ class TelegramSender:
             return False
 
     def _convert_to_telegram_markdown(self, text: str) -> str:
-        """
-        将标准 Markdown 转换为 Telegram 支持的格式
-        
-        Telegram Markdown 限制：
-        - 不支持 # 标题
-        - 使用 *bold* 而非 **bold**
-        - 使用 _italic_ 
+        """Convert content to Telegram MarkdownV2-safe text.
+
+        Strategy: keep output stable first (avoid parse errors), so we escape
+        MarkdownV2 special characters in dynamic text.
         """
         result = text
-        
-        # 移除 # 标题标记（Telegram 不支持）
+
+        # Remove heading markers for cleaner push text.
         result = re.sub(r'^#{1,6}\s+', '', result, flags=re.MULTILINE)
-        
-        # 转换 **bold** 为 *bold*
-        result = re.sub(r'\*\*(.+?)\*\*', r'*\1*', result)
-        
-        # Escape special characters for Telegram Markdown, but preserve link syntax [text](url)
-        # Step 1: temporarily protect markdown links
-        import uuid as _uuid
-        _link_placeholder = f"__LINK_{_uuid.uuid4().hex[:8]}__"
-        _links = []
-        def _save_link(m):
-            _links.append(m.group(0))
-            return f"{_link_placeholder}{len(_links) - 1}"
-        result = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', _save_link, result)
 
-        # Step 2: escape remaining special chars
-        for char in ['[', ']', '(', ')']:
-            result = result.replace(char, f'\\{char}')
-
-        # Step 3: restore links
-        for i, link in enumerate(_links):
-            result = result.replace(f"{_link_placeholder}{i}", link)
+        # MarkdownV2 special chars must be escaped:
+        # _ * [ ] ( ) ~ ` > # + - = | { } . !
+        result = re.sub(r'([_\*\[\]\(\)~`>#+\-=|{}\.!])', r'\\\1', result)
 
         return result
     
