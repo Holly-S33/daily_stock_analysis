@@ -186,7 +186,12 @@ jobs:
           fi
 
           # 判断运行模式
-          MODE="${{ github.event.inputs.mode || 'full' }}"
+          # 定时任务默认仅跑大盘复盘；手动触发仍支持 full/market-only/stocks-only
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            MODE="market-only"
+          else
+            MODE="${{ github.event.inputs.mode || 'full' }}"
+          fi
           
           echo "=========================================="
           echo "🚀 A股自选股智能分析系统"
