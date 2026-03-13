@@ -156,6 +156,28 @@ class TelegramSender:
                                    f"(attempt {attempt}/{max_retries}), retrying in {delay}s...")
                     time.sleep(delay)
                     continue
+
+                # Telegram sometimes returns Markdown parse errors as HTTP 400.
+                # In that case, retry once with plain text (no parse_mode).
+                resp_text = response.text or ""
+                if response.status_code == 400 and (
+                    'parse entities' in resp_text.lower()
+                    or 'can\'t parse entities' in resp_text.lower()
+                    or 'markdown' in resp_text.lower()
+                ):
+                    logger.warning("Telegram Markdown 解析失败，尝试纯文本回退发送...")
+                    plain_payload = dict(payload)
+                    plain_payload.pop('parse_mode', None)
+                    plain_payload['text'] = text
+                    try:
+                        fallback_resp = requests.post(api_url, json=plain_payload, timeout=10)
+                        if fallback_resp.status_code == 200 and fallback_resp.json().get('ok'):
+                            logger.info("Telegram 消息发送成功（HTTP400回退纯文本）")
+                            return True
+                        logger.error(f"Telegram 纯文本回退失败: HTTP {fallback_resp.status_code} | {fallback_resp.text}")
+                    except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                        logger.error(f"Telegram 纯文本回退异常: {e}")
+
                 logger.error(f"Telegram 请求失败: HTTP {response.status_code}")
                 logger.error(f"响应内容: {response.text}")
                 return False
