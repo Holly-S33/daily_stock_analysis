@@ -25,10 +25,13 @@ from enum import Enum
 
 from src.config import Config, get_config
 from src.enums import ReportType
+from src.market_phase_summary import format_public_market_status_line, format_public_phase_pack_excerpt
+from src.services.decision_signal_summary import format_decision_signal_excerpt
 from src.notification_routing import (
     get_notification_route_config,
     split_notification_route_channels,
 )
+from src.notification_contracts import is_feishu_static_configured
 from src.notification_noise import (
     NotificationNoiseDecision,
     evaluate_notification_noise,
@@ -336,6 +339,42 @@ class NotificationService(
                 models.append(model)
         return list(dict.fromkeys(models))
 
+    def _public_phase_pack_excerpt(self, result: AnalysisResult, report_language: str) -> str:
+        return format_public_phase_pack_excerpt(
+            getattr(result, "market_phase_summary", None),
+            getattr(result, "analysis_context_pack_overview", None),
+            source=getattr(result, "analysis_visibility_source", None) or "evaluator_snapshot",
+            report_language=report_language,
+        )
+
+    def _decision_signal_excerpt(self, result: AnalysisResult, report_language: str) -> str:
+        return format_decision_signal_excerpt(
+            getattr(result, "decision_signal_summary", None),
+            report_language=report_language,
+        )
+
+    def _public_market_status_line(self, results: List[AnalysisResult], report_language: str) -> str:
+        for result in results or []:
+            line = format_public_market_status_line(
+                getattr(result, "market_phase_summary", None),
+                report_language=report_language,
+            )
+            if line:
+                return line
+        return ""
+
+    def _append_market_status_line(
+        self,
+        lines: List[str],
+        results: List[AnalysisResult],
+        report_language: str,
+    ) -> None:
+        status_line = self._public_market_status_line(results, report_language)
+        if status_line:
+            lines.extend([status_line, ""])
+        elif lines and lines[-1] != "":
+            lines.append("")
+
     def _should_show_llm_model(self) -> bool:
         return bool(getattr(self._config, "report_show_llm_model", self._report_show_llm_model))
     
@@ -353,7 +392,7 @@ class NotificationService(
         if getattr(config, "wechat_webhook_url", None):
             channels.append(NotificationChannel.WECHAT)
 
-        if getattr(config, "feishu_webhook_url", None):
+        if is_feishu_static_configured(config):
             channels.append(NotificationChannel.FEISHU)
 
         if (
@@ -769,10 +808,9 @@ class NotificationService(
             "",
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit']} | "
             f"{labels['generated_at_label']}：{datetime.now().strftime('%H:%M:%S')}",
-            "",
-            "---",
-            "",
         ]
+        self._append_market_status_line(report_lines, results, report_language)
+        report_lines.extend(["---", ""])
         
         # 按评分排序（高分在前）
         sorted_results = sorted(
@@ -828,7 +866,9 @@ class NotificationService(
                     f"**Confidence：{confidence_stars}**",
                     "",
                 ])
-
+                signal_excerpt = self._decision_signal_excerpt(result, report_language)
+                if signal_excerpt:
+                    report_lines.extend([signal_excerpt, ""])
                 self._append_market_snapshot(report_lines, result)
                 
                 # 核心看点
@@ -1044,8 +1084,8 @@ class NotificationService(
             "",
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit']} | "
             f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count}",
-            "",
         ]
+        self._append_market_status_line(report_lines, results, report_language)
 
         # === 新增：分析结果摘要 (Issue #112) ===
         if results:
@@ -1081,6 +1121,9 @@ class NotificationService(
                     f"## {signal_emoji} {stock_name} ({result.code})",
                     "",
                 ])
+                signal_excerpt = self._decision_signal_excerpt(result, report_language)
+                if signal_excerpt:
+                    report_lines.extend([signal_excerpt, ""])
                 
                 # ========== 舆情与基本面概览（放在最前面）==========
                 intel = dashboard.get('intelligence', {}) if dashboard else {}
@@ -1348,8 +1391,8 @@ class NotificationService(
             "",
             f"> {len(results)} {labels['stock_unit']} | "
             f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count}",
-            "",
         ]
+        self._append_market_status_line(lines, results, report_language)
         
         # Issue #262: summary_only 时仅输出摘要列表
         if self._report_summary_only:
@@ -1383,6 +1426,10 @@ class NotificationService(
                 one_sentence = core.get('one_sentence', result.analysis_summary) if core else result.analysis_summary
                 if one_sentence:
                     lines.append(f"📌 **{one_sentence[:80]}**")
+                    lines.append("")
+                signal_excerpt = self._decision_signal_excerpt(result, report_language)
+                if signal_excerpt:
+                    lines.append(signal_excerpt)
                     lines.append("")
                 
                 # 重要信息区（舆情+基本面）
@@ -1500,8 +1547,8 @@ class NotificationService(
             f"> {labels['analyzed_prefix']} **{len(results)}** {labels['stock_unit_compact']} | "
             f"🟢{labels['buy_label']}:{buy_count} 🟡{labels['watch_label']}:{hold_count} 🔴{labels['sell_label']}:{sell_count} | "
             f"{labels['avg_score_label']}:{avg_score:.0f}",
-            "",
         ]
+        self._append_market_status_line(lines, results, report_language)
         
         # 每只股票精简信息（控制长度）
         for result in sorted_results:
@@ -1588,8 +1635,8 @@ class NotificationService(
             f"# {report_date} {labels['brief_title']}",
             "",
             f"> {len(results)} {labels['stock_unit_compact']} | 🟢{buy_count} 🟡{hold_count} 🔴{sell_count}",
-            "",
         ]
+        self._append_market_status_line(lines, results, report_language)
         for r in sorted_results:
             _, emoji, _ = self._get_signal_level(r)
             name = self._get_display_name(r, report_language)
@@ -1638,6 +1685,14 @@ class NotificationService(
             f"> {report_date} | {labels['score_label']}: **{result.sentiment_score}** | {localize_trend_prediction(result.trend_prediction, report_language)}",
             "",
         ]
+
+        excerpt = self._public_phase_pack_excerpt(result, report_language)
+        if excerpt:
+            lines.extend([excerpt, ""])
+
+        signal_excerpt = self._decision_signal_excerpt(result, report_language)
+        if signal_excerpt:
+            lines.extend([signal_excerpt, ""])
 
         self._append_market_snapshot(lines, result)
         
